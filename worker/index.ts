@@ -137,6 +137,74 @@ export class NotionClaudeBridge extends McpAgent<Env, {}, { login?: string }> {
       }
     );
 
+    // Tool: get_issue_result
+    this.server.tool(
+      "get_issue_result",
+      "GitHub IssueのClaude Codeによる処理結果を取得します。Claude botのコメント（作業完了報告、PRリンク、タスク一覧）を返します。",
+      {
+        issue_number: z.number().describe("Issueの番号"),
+      },
+      async ({ issue_number }) => {
+        const res = await githubAPI(
+          this.env,
+          `/issues/${issue_number}/comments`
+        );
+        const data = (await res.json()) as Array<Record<string, unknown>>;
+        if (!res.ok)
+          return {
+            content: [
+              { type: "text" as const, text: `Error: ${JSON.stringify(data)}` },
+            ],
+            isError: true,
+          };
+
+        // claude botのコメントを抽出
+        const claudeComments = data.filter((c) => {
+          const user = c.user as Record<string, unknown> | undefined;
+          return user?.type === "Bot" || user?.login === "claude[bot]";
+        });
+
+        if (claudeComments.length === 0) {
+          // まだ処理中かもしれない
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify(
+                  {
+                    status: "pending",
+                    message: `Issue #${issue_number} はまだClaude Codeが処理中か、まだ開始されていません。1-2分後に再度確認してください。`,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+          };
+        }
+
+        const latest = claudeComments[claudeComments.length - 1];
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  status: "completed",
+                  issue_number,
+                  claude_response: latest.body,
+                  comment_url: latest.html_url,
+                  updated_at: latest.updated_at,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+
     // Tool: list_pull_requests
     this.server.tool(
       "list_pull_requests",
