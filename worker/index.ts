@@ -137,6 +137,135 @@ export class NotionClaudeBridge extends McpAgent<Env, {}, { login?: string }> {
       }
     );
 
+    // Tool: batch_create_issues
+    this.server.tool(
+      "batch_create_issues",
+      "複数のタスクを一括でGitHub Issueに作成し、Claude Codeを並列起動します。NotionのDBから取得したタスクリストを一度に処理する際に使います。",
+      {
+        tasks: z.array(
+          z.object({
+            title: z.string().describe("タスクのタイトル"),
+            body: z.string().describe("実装指示（@claude付き）"),
+          })
+        ).describe("タスクの配列"),
+      },
+      async ({ tasks }) => {
+        const results = [];
+        for (const task of tasks) {
+          try {
+            const res = await githubAPI(this.env, "/issues", "POST", {
+              title: task.title,
+              body: task.body,
+            });
+            const data = (await res.json()) as Record<string, unknown>;
+            if (!res.ok) {
+              results.push({
+                title: task.title,
+                status: "error",
+                error: JSON.stringify(data),
+              });
+            } else {
+              results.push({
+                title: task.title,
+                status: "created",
+                issue_number: data.number,
+                url: data.html_url,
+              });
+            }
+          } catch (e) {
+            results.push({
+              title: task.title,
+              status: "error",
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  total: tasks.length,
+                  created: results.filter((r) => r.status === "created").length,
+                  errors: results.filter((r) => r.status === "error").length,
+                  results,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+
+    // Tool: batch_get_results
+    this.server.tool(
+      "batch_get_results",
+      "複数のIssueの処理結果を一括取得します。バッチ実行後の結果確認に使います。",
+      {
+        issue_numbers: z.array(z.number()).describe("Issue番号の配列"),
+      },
+      async ({ issue_numbers }) => {
+        const results = [];
+        for (const num of issue_numbers) {
+          try {
+            const res = await githubAPI(
+              this.env,
+              `/issues/${num}/comments`
+            );
+            const data = (await res.json()) as Array<Record<string, unknown>>;
+            const claudeComments = data.filter((c) => {
+              const user = c.user as Record<string, unknown> | undefined;
+              return user?.type === "Bot" || user?.login === "claude[bot]";
+            });
+
+            if (claudeComments.length === 0) {
+              results.push({
+                issue_number: num,
+                status: "pending",
+              });
+            } else {
+              const latest = claudeComments[claudeComments.length - 1];
+              // PRリンクを抽出
+              const body = latest.body as string;
+              const prMatch = body.match(/\[Create PR[^]]*\]\(([^)]+)\)/);
+              results.push({
+                issue_number: num,
+                status: "completed",
+                summary: body.split("---")[0].trim(),
+                pr_link: prMatch ? prMatch[1] : null,
+              });
+            }
+          } catch (e) {
+            results.push({
+              issue_number: num,
+              status: "error",
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  total: issue_numbers.length,
+                  completed: results.filter((r) => r.status === "completed").length,
+                  pending: results.filter((r) => r.status === "pending").length,
+                  results,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+
     // Tool: get_issue_result
     this.server.tool(
       "get_issue_result",
