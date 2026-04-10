@@ -1,7 +1,17 @@
 name = "notion-claude-bridge"
 main = "index.ts"
-compatibility_date = "2024-11-01"
+compatibility_date = "2025-03-14"
+compatibility_flags = ["nodejs_compat"]
 
 [vars]
 GITHUB_OWNER = "yaoo77"
 GITHUB_REPO = "notion-claude-bridge"
+
+[durable_objects]
+bindings = [
+  { name = "MCP_OBJECT", class_name = "NotionClaudeBridge" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["NotionClaudeBridge"]

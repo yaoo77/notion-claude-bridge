@@ -1,95 +1,21 @@
 /**
  * Notion AI → GitHub Bridge MCP Server
- * Cloudflare Worker として動作し、Notion AI のカスタムエージェントから
- * GitHub Issue 作成・PR コメントを行う
+ * Cloudflare Agents SDK (McpAgent) ベースの Streamable HTTP 対応版
  */
+
+import { McpAgent } from "agents/mcp";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
 
 interface Env {
   GITHUB_TOKEN: string;
   GITHUB_OWNER: string;
   GITHUB_REPO: string;
   MCP_AUTH_TOKEN: string;
+  MCP_OBJECT: DurableObjectNamespace;
 }
 
-// MCP Protocol types
-interface MCPRequest {
-  jsonrpc: "2.0";
-  id: string | number;
-  method: string;
-  params?: Record<string, unknown>;
-}
-
-interface MCPResponse {
-  jsonrpc: "2.0";
-  id: string | number;
-  result?: unknown;
-  error?: { code: number; message: string };
-}
-
-// Tool definitions
-const TOOLS = [
-  {
-    name: "create_issue",
-    description:
-      "GitHub Issueを作成し、Claude Code（GitHub Actions）を起動します。Issueのタイトルと本文を指定してください。本文に実装指示を書くと、Claude Codeが自動でPRを作成します。",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        title: {
-          type: "string",
-          description: "Issueのタイトル",
-        },
-        body: {
-          type: "string",
-          description:
-            "Issueの本文。Claude Codeへの実装指示を含めてください。",
-        },
-        labels: {
-          type: "array",
-          items: { type: "string" },
-          description: "ラベル（省略可）",
-        },
-      },
-      required: ["title", "body"],
-    },
-  },
-  {
-    name: "comment_on_issue",
-    description:
-      "既存のIssueまたはPRにコメントを投稿します。@claudeを含めるとClaude Codeが反応して追加作業を行います。",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        issue_number: {
-          type: "number",
-          description: "IssueまたはPRの番号",
-        },
-        body: {
-          type: "string",
-          description:
-            "コメント本文。Claude Codeに指示する場合は @claude を含めてください。",
-        },
-      },
-      required: ["issue_number", "body"],
-    },
-  },
-  {
-    name: "list_pull_requests",
-    description:
-      "リポジトリのPR一覧を取得します。Claude Codeが作成したPRの状況確認に使います。",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        state: {
-          type: "string",
-          enum: ["open", "closed", "all"],
-          description: "PRの状態（デフォルト: open）",
-        },
-      },
-    },
-  },
-];
-
+// GitHub API helper
 async function githubAPI(
   env: Env,
   path: string,
@@ -109,149 +35,176 @@ async function githubAPI(
   });
 }
 
-async function handleToolCall(
-  env: Env,
-  name: string,
-  args: Record<string, unknown>
-): Promise<unknown> {
-  switch (name) {
-    case "create_issue": {
-      const res = await githubAPI(env, "/issues", "POST", {
-        title: args.title,
-        body: args.body,
-        labels: args.labels || [],
-      });
-      const data = (await res.json()) as Record<string, unknown>;
-      if (!res.ok) throw new Error(`GitHub API error: ${JSON.stringify(data)}`);
-      return {
-        issue_number: data.number,
-        url: data.html_url,
-        message: `Issue #${data.number} を作成しました。Claude Codeが自動で処理を開始します。`,
-      };
-    }
+// McpAgent Durable Object
+export class NotionClaudeBridge extends McpAgent<Env, {}, { login?: string }> {
+  server = new McpServer({
+    name: "notion-claude-bridge",
+    version: "1.0.0",
+  });
 
-    case "comment_on_issue": {
-      const res = await githubAPI(
-        env,
-        `/issues/${args.issue_number}/comments`,
-        "POST",
-        { body: args.body }
-      );
-      const data = (await res.json()) as Record<string, unknown>;
-      if (!res.ok) throw new Error(`GitHub API error: ${JSON.stringify(data)}`);
-      return {
-        comment_url: data.html_url,
-        message: `Issue/PR #${args.issue_number} にコメントしました。`,
-      };
+  async authenticate(req: Request): Promise<{ login?: string }> {
+    const auth = req.headers.get("Authorization");
+    if (!auth?.startsWith("Bearer ")) {
+      throw new Response("Unauthorized", { status: 401 });
     }
-
-    case "list_pull_requests": {
-      const state = (args.state as string) || "open";
-      const res = await githubAPI(env, `/pulls?state=${state}`);
-      const data = (await res.json()) as Array<Record<string, unknown>>;
-      if (!res.ok) throw new Error(`GitHub API error: ${JSON.stringify(data)}`);
-      return data.map((pr) => ({
-        number: pr.number,
-        title: pr.title,
-        state: pr.state,
-        url: pr.html_url,
-        user: (pr.user as Record<string, unknown>)?.login,
-        created_at: pr.created_at,
-      }));
+    if (auth.slice(7) !== this.env.MCP_AUTH_TOKEN) {
+      throw new Response("Forbidden", { status: 403 });
     }
+    return { login: "notion-agent" };
+  }
 
-    default:
-      throw new Error(`Unknown tool: ${name}`);
+  async init() {
+    // Tool: create_issue
+    this.server.tool(
+      "create_issue",
+      "GitHub Issueを作成し、Claude Code（GitHub Actions）を起動します。本文に実装指示を書くと、Claude Codeが自動でPRを作成します。",
+      {
+        title: z.string().describe("Issueのタイトル"),
+        body: z.string().describe("Issueの本文。Claude Codeへの実装指示を含めてください。"),
+        labels: z.array(z.string()).optional().describe("ラベル（省略可）"),
+      },
+      async ({ title, body, labels }) => {
+        const res = await githubAPI(this.env, "/issues", "POST", {
+          title,
+          body,
+          labels: labels || [],
+        });
+        const data = (await res.json()) as Record<string, unknown>;
+        if (!res.ok)
+          return {
+            content: [
+              { type: "text" as const, text: `Error: ${JSON.stringify(data)}` },
+            ],
+            isError: true,
+          };
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  issue_number: data.number,
+                  url: data.html_url,
+                  message: `Issue #${data.number} を作成しました。Claude Codeが自動で処理を開始します。`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+
+    // Tool: comment_on_issue
+    this.server.tool(
+      "comment_on_issue",
+      "既存のIssueまたはPRにコメントを投稿します。@claudeを含めるとClaude Codeが反応して追加作業を行います。",
+      {
+        issue_number: z.number().describe("IssueまたはPRの番号"),
+        body: z.string().describe("コメント本文。Claude Codeに指示する場合は @claude を含めてください。"),
+      },
+      async ({ issue_number, body }) => {
+        const res = await githubAPI(
+          this.env,
+          `/issues/${issue_number}/comments`,
+          "POST",
+          { body }
+        );
+        const data = (await res.json()) as Record<string, unknown>;
+        if (!res.ok)
+          return {
+            content: [
+              { type: "text" as const, text: `Error: ${JSON.stringify(data)}` },
+            ],
+            isError: true,
+          };
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(
+                {
+                  comment_url: data.html_url,
+                  message: `Issue/PR #${issue_number} にコメントしました。`,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    );
+
+    // Tool: list_pull_requests
+    this.server.tool(
+      "list_pull_requests",
+      "リポジトリのPR一覧を取得します。Claude Codeが作成したPRの状況確認に使います。",
+      {
+        state: z
+          .enum(["open", "closed", "all"])
+          .optional()
+          .default("open")
+          .describe("PRの状態（デフォルト: open）"),
+      },
+      async ({ state }) => {
+        const res = await githubAPI(this.env, `/pulls?state=${state}`);
+        const data = (await res.json()) as Array<Record<string, unknown>>;
+        if (!res.ok)
+          return {
+            content: [
+              { type: "text" as const, text: `Error: ${JSON.stringify(data)}` },
+            ],
+            isError: true,
+          };
+        const prs = data.map((pr) => ({
+          number: pr.number,
+          title: pr.title,
+          state: pr.state,
+          url: pr.html_url,
+          user: (pr.user as Record<string, unknown>)?.login,
+          created_at: pr.created_at,
+        }));
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify(prs, null, 2) },
+          ],
+        };
+      }
+    );
   }
 }
 
-function mcpResponse(id: string | number, result: unknown): MCPResponse {
-  return { jsonrpc: "2.0", id, result };
-}
-
-function mcpError(
-  id: string | number,
-  code: number,
-  message: string
-): MCPResponse {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
-
+// Worker entrypoint
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    // CORS
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // CORS preflight
     if (request.method === "OPTIONS") {
       return new Response(null, {
         headers: {
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type, Authorization",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS, DELETE",
+          "Access-Control-Allow-Headers": "Content-Type, Authorization, mcp-session-id",
         },
       });
     }
 
-    if (request.method !== "POST") {
-      return new Response("Method not allowed", { status: 405 });
+    const url = new URL(request.url);
+
+    // /mcp → Durable Object にルーティング
+    if (url.pathname === "/mcp" || url.pathname.startsWith("/agents/")) {
+      return NotionClaudeBridge.serve("/mcp").fetch(request, env, ctx);
     }
 
-    // Bearer token認証
-    const authHeader = request.headers.get("Authorization");
-    if (!authHeader || authHeader !== `Bearer ${env.MCP_AUTH_TOKEN}`) {
-      return new Response("Unauthorized", { status: 401 });
+    // Health check
+    if (url.pathname === "/" && request.method === "GET") {
+      return new Response(
+        JSON.stringify({ status: "ok", service: "notion-claude-bridge" }),
+        { headers: { "Content-Type": "application/json" } }
+      );
     }
 
-    const body = (await request.json()) as MCPRequest;
-    let response: MCPResponse;
-
-    switch (body.method) {
-      case "initialize":
-        response = mcpResponse(body.id, {
-          protocolVersion: "2024-11-05",
-          capabilities: { tools: {} },
-          serverInfo: {
-            name: "notion-claude-bridge",
-            version: "1.0.0",
-          },
-        });
-        break;
-
-      case "tools/list":
-        response = mcpResponse(body.id, { tools: TOOLS });
-        break;
-
-      case "tools/call": {
-        const params = body.params as {
-          name: string;
-          arguments: Record<string, unknown>;
-        };
-        try {
-          const result = await handleToolCall(
-            env,
-            params.name,
-            params.arguments || {}
-          );
-          response = mcpResponse(body.id, {
-            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-          });
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          response = mcpResponse(body.id, {
-            content: [{ type: "text", text: `Error: ${msg}` }],
-            isError: true,
-          });
-        }
-        break;
-      }
-
-      default:
-        response = mcpError(body.id, -32601, `Method not found: ${body.method}`);
-    }
-
-    return new Response(JSON.stringify(response), {
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-    });
+    return new Response("Not found", { status: 404 });
   },
 };
