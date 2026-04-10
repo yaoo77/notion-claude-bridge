@@ -35,4 +35,4 @@ jobs:
           allowed_tools: "Bash(python3:*),Bash(python:*),Bash(pip3:*),Bash(pip:*),Bash(cd:*)"
           claude_args: "--dangerously-skip-permissions"
         env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          GOOGLE_OAUTH_TOKEN: ${{ secrets.GOOGLE_OAUTH_TOKEN }}

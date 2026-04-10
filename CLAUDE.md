@@ -18,4 +18,4 @@ slides.json の形式:
 ]
 ```
 
-環境変数 `GCP_SA_KEY` が必要（GitHub Secretsに登録済み）。
+環境変数 `GOOGLE_OAUTH_TOKEN` が必要（GitHub Secretsに登録済み）。
