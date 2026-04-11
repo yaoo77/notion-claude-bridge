@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>料金シミュレーター</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+      background: #f5f7fa;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.10);
+      padding: 40px 36px;
+      width: 100%;
+      max-width: 480px;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #1a1a2e;
+      margin-bottom: 28px;
+      text-align: center;
+    }
+
+    .field { margin-bottom: 20px; }
+
+    label {
+      display: block;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #444;
+      margin-bottom: 6px;
+    }
+
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 10px 14px;
+      border: 1.5px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 1rem;
+      color: #1a1a2e;
+      background: #fff;
+      outline: none;
+      transition: border-color 0.2s;
+      appearance: auto;
+    }
+
+    input[type="number"]:focus,
+    select:focus {
+      border-color: #4f6ef7;
+    }
+
+    .error {
+      color: #e53e3e;
+      font-size: 0.8rem;
+      margin-top: 4px;
+      min-height: 1.2em;
+    }
+
+    .result-box {
+      background: #f0f4ff;
+      border-radius: 10px;
+      padding: 24px 20px;
+      margin-top: 28px;
+    }
+
+    .result-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 0;
+      font-size: 0.95rem;
+      color: #555;
+      border-bottom: 1px solid #dde3f5;
+    }
+
+    .result-row:last-child { border-bottom: none; }
+
+    .result-row.total {
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #1a1a2e;
+      padding-top: 14px;
+    }
+
+    .result-value {
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.02em;
+    }
+
+    .unit { font-size: 0.8em; margin-left: 2px; color: #888; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>料金シミュレーター</h1>
+
+    <div class="field">
+      <label for="count">回数</label>
+      <input type="number" id="count" min="1" step="1" placeholder="例: 3" value="">
+      <div class="error" id="count-error"></div>
+    </div>
+
+    <div class="field">
+      <label for="plan">プラン</label>
+      <select id="plan">
+        <option value="600000">Standard（60万円 / 回）</option>
+        <option value="800000">Custom（80万円 / 回）</option>
+      </select>
+    </div>
+
+    <div class="result-box">
+      <div class="result-row">
+        <span>小計</span>
+        <span class="result-value" id="subtotal">—<span class="unit">円</span></span>
+      </div>
+      <div class="result-row">
+        <span>消費税（10%）</span>
+        <span class="result-value" id="tax">—<span class="unit">円</span></span>
+      </div>
+      <div class="result-row total">
+        <span>合計（税込）</span>
+        <span class="result-value" id="total">—<span class="unit">円</span></span>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const countInput = document.getElementById('count');
+    const planSelect = document.getElementById('plan');
+    const countError = document.getElementById('count-error');
+    const subtotalEl = document.getElementById('subtotal');
+    const taxEl = document.getElementById('tax');
+    const totalEl = document.getElementById('total');
+
+    function fmt(n) {
+      return n.toLocaleString('ja-JP');
+    }
+
+    function withUnit(el, value) {
+      el.innerHTML = fmt(value) + '<span class="unit">円</span>';
+    }
+
+    function clearResult() {
+      subtotalEl.innerHTML = '—<span class="unit">円</span>';
+      taxEl.innerHTML = '—<span class="unit">円</span>';
+      totalEl.innerHTML = '—<span class="unit">円</span>';
+    }
+
+    function calculate() {
+      const rawCount = countInput.value.trim();
+      const count = parseInt(rawCount, 10);
+      const pricePerUnit = parseInt(planSelect.value, 10);
+
+      // バリデーション
+      if (rawCount === '' || isNaN(count)) {
+        countError.textContent = '';
+        clearResult();
+        return;
+      }
+
+      if (count < 1) {
+        countError.textContent = '回数は1以上の整数を入力してください。';
+        clearResult();
+        return;
+      }
+
+      countError.textContent = '';
+
+      const subtotal = count * pricePerUnit;
+      const tax = Math.floor(subtotal * 0.1);
+      const total = subtotal + tax;
+
+      withUnit(subtotalEl, subtotal);
+      withUnit(taxEl, tax);
+      withUnit(totalEl, total);
+    }
+
+    countInput.addEventListener('input', calculate);
+    planSelect.addEventListener('change', calculate);
+  </script>
+</body>
+</html>
