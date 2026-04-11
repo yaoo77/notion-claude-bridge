@@ -16,6 +16,12 @@ claude-code-action (GitHub Actions)
 Notion AI が GitHubコネクターで結果を読む
 ```
 
+## ドキュメント
+
+| ファイル | 説明 |
+|----------|------|
+| [AI研修アジェンダ 雛形](docs/ai-training-agenda-template.md) | 営業提案書に使えるAI研修アジェンダのMarkdownテンプレート |
+
 ## セットアップ
 
 ### 1. GitHub
