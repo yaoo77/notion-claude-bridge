@@ -14,7 +14,7 @@ import sys
 import urllib.request
 
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
-DB_CC_ID = "33e71450-0266-80d4-a844-000b023fbd60"
+DB_CC_ID = "33e71450-0266-80b6-9cfb-de4b19dce3a0"
 NOTION_API = "https://api.notion.com/v1"
 
 
