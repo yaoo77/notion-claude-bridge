@@ -29,6 +29,7 @@ jobs:
           python-version: "3.12"
       - run: pip install -r scripts/requirements.txt
       - uses: anthropics/claude-code-action@v1
+        id: claude
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           trigger_phrase: "@claude"
@@ -36,3 +37,22 @@ jobs:
           claude_args: "--dangerously-skip-permissions"
         env:
           GOOGLE_OAUTH_TOKEN: ${{ secrets.GOOGLE_OAUTH_TOKEN }}
+
+      # Claude Code完了後、Notion DB_CCを自動更新
+      - name: Update Notion DB_CC
+        if: always() && github.event_name == 'issues'
+        run: |
+          ISSUE_NUMBER="${{ github.event.issue.number }}"
+          # Claude botの最新コメントからPRリンクと結果を取得
+          COMMENT=$(gh api repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments --jq '.[-1].body // ""' 2>/dev/null || echo "")
+          PR_LINK=$(echo "$COMMENT" | grep -o 'https://github.com/[^)]*quick_pull=1[^)]*' | head -1 || echo "")
+          SUMMARY=$(echo "$COMMENT" | head -5 | tr '\n' ' ' | cut -c1-500 || echo "Claude Code completed")
+
+          python3 scripts/update_notion.py \
+            --issue-number "$ISSUE_NUMBER" \
+            --status "完了" \
+            --pr-link "$PR_LINK" \
+            --summary "$SUMMARY"
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
